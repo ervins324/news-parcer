@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -10,7 +11,7 @@ import sys
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, BufferedInputFile, InputMediaPhoto, MediaUnion
 
 # Імпортуємо конфіг та функцію генерації
 import config
@@ -61,13 +62,14 @@ async def send_long_message_to_user(bot_instance: Bot, chat_id: int, text: str):
             await asyncio.sleep(0.5)
 
 # --- ФУНКЦІЯ ЗБОРУ ДАНИХ ЧЕРЕЗ WEB-PARSING ---
-def get_telegram_posts_via_web() -> tuple[str, set]:
+def get_telegram_posts_via_web() -> tuple[str, set, dict]:
     start_time = time.time()
     seen_list = load_seen_posts()
     seen = set(seen_list)
     print(f"[DEBUG] Початок збору даних з Telegram-каналів... (всього збережено {len(seen)} ID)")
     text_data = ""
     new_ids: set = set()
+    images_by_post: dict = {}
     time_threshold = datetime.now(timezone.utc) - timedelta(days=1)
     print(f"[DEBUG] Шукаємо пости, опубліковані після: {time_threshold}")
     
@@ -130,6 +132,18 @@ def get_telegram_posts_via_web() -> tuple[str, set]:
                         text_data += f"Пост: {clean_text}\nПосилання на оригінал: {post_link}\n\n"
                         new_ids.add(post_id_attr)
                         posts_added += 1
+                        photo_urls = []
+                        for photo_a in msg.select('a.tgme_widget_message_photo_wrap'):
+                            style_attr = str(photo_a.get('style') or '')
+                            href_attr = str(photo_a.get('href') or '')
+                            match = re.search(r"background-image:url\('(.+?)'\)", style_attr)
+                            if match and href_attr:
+                                photo_urls.append({
+                                    "url": match.group(1),
+                                    "link": href_attr.split('?')[0],
+                                })
+                        if photo_urls:
+                            images_by_post[post_id_attr] = photo_urls
             
             print(f"[DEBUG] З каналу {channel}: додано {posts_added}, пропущено (раніше бачені) {posts_skipped}")
                         
@@ -140,7 +154,37 @@ def get_telegram_posts_via_web() -> tuple[str, set]:
     end_time = time.time()
     parsing_duration = end_time - start_time
     print(f"[DEBUG] Збір даних завершено за {parsing_duration:.2f} сек.\n")
-    return text_data, new_ids
+    return text_data, new_ids, images_by_post
+
+# --- ФУНКЦІЯ НАДСИЛАННЯ ЗОБРАЖЕНЬ З ОРИГІНАЛЬНИХ ПОСТІВ ---
+async def send_post_images(bot_instance: Bot, chat_id: int, images_by_post: dict):
+    if not images_by_post:
+        return
+    total_images = sum(len(photos) for photos in images_by_post.values())
+    print(f"[DEBUG] Надсилаємо зображення з оригінальних постів (всього {total_images} шт.)...")
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    for post_id, photos in images_by_post.items():
+        album: list[MediaUnion] = []
+        for idx, photo in enumerate(photos):
+            if idx >= config.MAX_IMAGES_PER_POST:
+                break
+            try:
+                resp = requests.get(photo["url"], headers=headers, timeout=10)
+                if resp.status_code != 200:
+                    continue
+                input_file = BufferedInputFile(resp.content, filename=f"{post_id}_{idx}.jpg")
+                caption = f"Оригінал: {photo['link']}" if idx == 0 else None
+                album.append(InputMediaPhoto(media=input_file, caption=caption))
+            except Exception as e:
+                print(f"[WARNING] Не вдалося завантажити зображення {photo['url']}: {e}")
+        for i in range(0, len(album), 10):
+            try:
+                await bot_instance.send_media_group(chat_id, album[i:i+10])
+            except Exception as e:
+                print(f"[WARNING] Помилка надсилання альбому зображень: {e}")
+            await asyncio.sleep(0.5)
 
 # --- СПІЛЬНА ЛОГІКА СТВОРЕННЯ ТА НАДСИЛАННЯ ГАЗЕТИ ---
 async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
@@ -151,7 +195,7 @@ async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
     waiting_msg = await bot_instance.send_message(chat_id, "🗞 Друкую газету... Зачекайте хвилинку.")
     
     try:
-        tg_content, new_post_ids = get_telegram_posts_via_web()
+        tg_content, new_post_ids, images_by_post = get_telegram_posts_via_web()
 
         if not new_post_ids:
             await waiting_msg.edit_text("Свіжих новин за останні 24 години не знайдено.")
@@ -162,6 +206,9 @@ async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
         
         print("[DEBUG] Надсилаємо газету...")
         await send_long_message_to_user(bot_instance, chat_id, response_text)
+        
+        if getattr(config, 'SEND_IMAGES', True):
+            await send_post_images(bot_instance, chat_id, images_by_post)
         
         await waiting_msg.delete()
 
