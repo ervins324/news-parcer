@@ -162,15 +162,15 @@ def get_telegram_posts_via_web() -> tuple[str, set, dict]:
     return text_data, new_ids, images_by_post
 
 # --- ФУНКЦІЯ НАДСИЛАННЯ ЗОБРАЖЕНЬ З ОРИГІНАЛЬНИХ ПОСТІВ ---
-async def send_post_images(bot_instance: Bot, chat_id: int, images_by_post: dict, reply_to_message_id: int | None = None):
-    if not images_by_post:
-        return
-    total_images = sum(len(photos) for photos in images_by_post.values())
-    print(f"[DEBUG] Надсилаємо зображення з оригінальних постів (всього {total_images} шт.)...")
+async def send_post_images(bot_instance: Bot, chat_id: int, response_text: str, images_by_post: dict) -> str:
+    """
+    Надсилає альбом зображень (sendMediaGroup), у якого текст дайджесту є підписом (caption) першого фото.
+    Повертає решту тексту, якщо він не вмістився у ліміт caption (1024 симв.).
+    """
+    loaded: list[BufferedInputFile] = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    loaded: list[MediaUnion] = []
     for photos in images_by_post.values():
         for photo in photos:
             if len(loaded) >= config.MAX_TOTAL_IMAGES:
@@ -180,24 +180,35 @@ async def send_post_images(bot_instance: Bot, chat_id: int, images_by_post: dict
                 if resp.status_code != 200:
                     continue
                 filename = photo["url"].split("/")[-1]
-                input_file = BufferedInputFile(resp.content, filename=filename)
-                loaded.append(InputMediaPhoto(media=input_file))
+                loaded.append(BufferedInputFile(resp.content, filename=filename))
             except Exception as e:
                 print(f"[WARNING] Не вдалося завантажити зображення {photo['url']}: {e}")
+
+    if not loaded:
+        return response_text
+
+    caption_limit = 1024
+    caption = response_text[:caption_limit]
+    leftover = response_text[caption_limit:]
+
+    print(f"[DEBUG] Надсилаємо галерею зображень ({len(loaded)} шт.) з текстом у підписі...")
     for i in range(0, len(loaded), 10):
         chunk = loaded[i:i+10]
+        cap = caption if i == 0 else None
         try:
             if len(chunk) == 1:
-                await bot_instance.send_photo(
-                    chat_id, chunk[0].media, reply_to_message_id=reply_to_message_id
-                )
+                await bot_instance.send_photo(chat_id, chunk[0], caption=cap)
             else:
-                await bot_instance.send_media_group(
-                    chat_id, chunk, reply_to_message_id=reply_to_message_id
-                )
+                media: list[MediaUnion] = [
+                    InputMediaPhoto(media=img, caption=(cap if idx == 0 else None))
+                    for idx, img in enumerate(chunk)
+                ]
+                await bot_instance.send_media_group(chat_id, media)
         except Exception as e:
             print(f"[WARNING] Помилка надсилання галереї зображень: {e}")
         await asyncio.sleep(0.5)
+
+    return leftover
 
 # --- ФУНКЦІЯ ВИДІЛЕННЯ ID ПОСТІВ, ЗГАДАНИХ У ДАЙДЖЕСТІ ---
 def extract_post_ids_from_digest(text: str) -> set:
@@ -222,8 +233,7 @@ async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
         response_text = generate_news_digest(tg_content)
         
         print("[DEBUG] Надсилаємо газету...")
-        summary_message_ids = await send_long_message_to_user(bot_instance, chat_id, response_text)
-        
+
         if getattr(config, 'SEND_IMAGES', True):
             digest_post_ids = extract_post_ids_from_digest(response_text)
             filtered_images = {
@@ -231,12 +241,13 @@ async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
                 for pid, photos in images_by_post.items()
                 if pid in digest_post_ids
             }
-            await send_post_images(
-                bot_instance,
-                chat_id,
-                filtered_images,
-                reply_to_message_id=summary_message_ids[-1] if summary_message_ids else None,
+            leftover_text = await send_post_images(
+                bot_instance, chat_id, response_text, filtered_images
             )
+            if leftover_text:
+                await send_long_message_to_user(bot_instance, chat_id, leftover_text)
+        else:
+            await send_long_message_to_user(bot_instance, chat_id, response_text)
         
         await waiting_msg.delete()
 
