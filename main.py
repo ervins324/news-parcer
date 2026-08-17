@@ -47,19 +47,24 @@ bot = Bot(
 dp = Dispatcher()
 
 # --- ФУНКЦІЯ БЕЗПЕЧНОГО НАДСИЛАННЯ ДОВГОГО ТЕКСТУ ---
-async def send_long_message_to_user(bot_instance: Bot, chat_id: int, text: str):
+async def send_long_message_to_user(bot_instance: Bot, chat_id: int, text: str) -> list[int]:
     """
     Розбиває довгий текст на частини по 4000 символів та надсилає їх користувачу за його ID.
+    Повертає список message_id надісланих повідомлень.
     """
     limit = 4000
+    message_ids: list[int] = []
     if len(text) <= limit:
-        await bot_instance.send_message(chat_id, text)
+        sent = await bot_instance.send_message(chat_id, text)
+        message_ids.append(sent.message_id)
     else:
         print(f"[DEBUG] Повідомлення занадто довге ({len(text)} симв.). Розбиваємо на частини...")
         for i in range(0, len(text), limit):
             part = text[i:i+limit]
-            await bot_instance.send_message(chat_id, part)
+            sent = await bot_instance.send_message(chat_id, part)
+            message_ids.append(sent.message_id)
             await asyncio.sleep(0.5)
+    return message_ids
 
 # --- ФУНКЦІЯ ЗБОРУ ДАНИХ ЧЕРЕЗ WEB-PARSING ---
 def get_telegram_posts_via_web() -> tuple[str, set, dict]:
@@ -157,7 +162,7 @@ def get_telegram_posts_via_web() -> tuple[str, set, dict]:
     return text_data, new_ids, images_by_post
 
 # --- ФУНКЦІЯ НАДСИЛАННЯ ЗОБРАЖЕНЬ З ОРИГІНАЛЬНИХ ПОСТІВ ---
-async def send_post_images(bot_instance: Bot, chat_id: int, images_by_post: dict):
+async def send_post_images(bot_instance: Bot, chat_id: int, images_by_post: dict, reply_to_message_id: int | None = None):
     if not images_by_post:
         return
     total_images = sum(len(photos) for photos in images_by_post.values())
@@ -165,26 +170,38 @@ async def send_post_images(bot_instance: Bot, chat_id: int, images_by_post: dict
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
-    for post_id, photos in images_by_post.items():
-        album: list[MediaUnion] = []
-        for idx, photo in enumerate(photos):
-            if idx >= config.MAX_IMAGES_PER_POST:
+    loaded: list[MediaUnion] = []
+    for photos in images_by_post.values():
+        for photo in photos:
+            if len(loaded) >= config.MAX_TOTAL_IMAGES:
                 break
             try:
                 resp = requests.get(photo["url"], headers=headers, timeout=10)
                 if resp.status_code != 200:
                     continue
-                input_file = BufferedInputFile(resp.content, filename=f"{post_id}_{idx}.jpg")
-                caption = f"Оригінал: {photo['link']}" if idx == 0 else None
-                album.append(InputMediaPhoto(media=input_file, caption=caption))
+                filename = photo["url"].split("/")[-1]
+                input_file = BufferedInputFile(resp.content, filename=filename)
+                loaded.append(InputMediaPhoto(media=input_file))
             except Exception as e:
                 print(f"[WARNING] Не вдалося завантажити зображення {photo['url']}: {e}")
-        for i in range(0, len(album), 10):
-            try:
-                await bot_instance.send_media_group(chat_id, album[i:i+10])
-            except Exception as e:
-                print(f"[WARNING] Помилка надсилання альбому зображень: {e}")
-            await asyncio.sleep(0.5)
+    for i in range(0, len(loaded), 10):
+        chunk = loaded[i:i+10]
+        try:
+            if len(chunk) == 1:
+                await bot_instance.send_photo(
+                    chat_id, chunk[0].media, reply_to_message_id=reply_to_message_id
+                )
+            else:
+                await bot_instance.send_media_group(
+                    chat_id, chunk, reply_to_message_id=reply_to_message_id
+                )
+        except Exception as e:
+            print(f"[WARNING] Помилка надсилання галереї зображень: {e}")
+        await asyncio.sleep(0.5)
+
+# --- ФУНКЦІЯ ВИДІЛЕННЯ ID ПОСТІВ, ЗГАДАНИХ У ДАЙДЖЕСТІ ---
+def extract_post_ids_from_digest(text: str) -> set:
+    return set(re.findall(r'https://t\.me/([a-zA-Z0-9_]+/\d+)', text))
 
 # --- СПІЛЬНА ЛОГІКА СТВОРЕННЯ ТА НАДСИЛАННЯ ГАЗЕТИ ---
 async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
@@ -205,10 +222,21 @@ async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
         response_text = generate_news_digest(tg_content)
         
         print("[DEBUG] Надсилаємо газету...")
-        await send_long_message_to_user(bot_instance, chat_id, response_text)
+        summary_message_ids = await send_long_message_to_user(bot_instance, chat_id, response_text)
         
         if getattr(config, 'SEND_IMAGES', True):
-            await send_post_images(bot_instance, chat_id, images_by_post)
+            digest_post_ids = extract_post_ids_from_digest(response_text)
+            filtered_images = {
+                pid: photos
+                for pid, photos in images_by_post.items()
+                if pid in digest_post_ids
+            }
+            await send_post_images(
+                bot_instance,
+                chat_id,
+                filtered_images,
+                reply_to_message_id=summary_message_ids[-1] if summary_message_ids else None,
+            )
         
         await waiting_msg.delete()
 
