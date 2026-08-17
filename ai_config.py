@@ -1,7 +1,11 @@
+import logging
+
 from google import genai
 import config
 
-print("[DEBUG] Налаштування клієнта Gemini...")
+log = logging.getLogger(__name__)
+
+log.debug("Налаштування клієнта Gemini...")
 ai_client = genai.Client(api_key=config.GEMINI_API_KEY)
 
 def generate_news_digest(tg_content: str) -> str:
@@ -72,6 +76,6 @@ def generate_news_digest(tg_content: str) -> str:
 
     if response.usage_metadata:
         total_tokens = response.usage_metadata.total_token_count
-        print(f"[AI DEBUG] Генерація успішна. Всього використано токенів: {total_tokens}")
+        log.info("Генерація успішна. Всього використано токенів: %s", total_tokens)
 
     return response.text if response.text else "Вибач, не вдалося згенерувати текст новин."
