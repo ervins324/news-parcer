@@ -449,6 +449,14 @@ async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
                 await waiting_msg.edit_text(f"Сталася помилка при генерації: {exc}")
             except Exception as edit_err:
                 log.error("Не вдалося відредагувати статус-повідомлення: %s", edit_err)
+        finally:
+            import gc
+            gc.collect()
+            try:
+                import ctypes
+                ctypes.CDLL("libc.so.6").malloc_trim(0)
+            except Exception:
+                pass
 
 
 # ---------------------------------------------------------------------------

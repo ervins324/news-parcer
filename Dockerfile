@@ -1,8 +1,10 @@
 FROM python:3.13-slim
 
-# Prevent Python from writing .pyc files and keep stdout/stderr unbuffered
+# Prevent Python from writing .pyc files, keep stdout/stderr unbuffered, and optimize memory
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PYTHONOPTIMIZE=1 \
+    MALLOC_ARENA_MAX=2 \
     TZ=Europe/Kyiv
 
 # Install system dependencies

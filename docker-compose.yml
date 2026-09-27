@@ -7,6 +7,12 @@ services:
       - .env
     environment:
       - SEEN_POSTS_FILE=/app/data/seen_posts.json
+      - MALLOC_ARENA_MAX=2
+      - PYTHONOPTIMIZE=1
+    deploy:
+      resources:
+        limits:
+          memory: 256M
     volumes:
       - news-data:/app/data
 
