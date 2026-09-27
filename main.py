@@ -523,7 +523,8 @@ async def cmd_start(message: Message):
         "📌 <b>Команди:</b>\n"
         "• /gazette — підготувати та надіслати свіжий випуск новин прямо зараз\n"
         "• /schedule — переглянути активний розклад випусків\n"
-        "• /status — перевірити статус підключення LLM та джерел\n\n"
+        "• /status — перевірити статус підключення LLM та джерел\n"
+        "• /memory — діагностика використання пам'яті (RAM) ботом\n\n"
         f"⏰ <b>Автоматична розсилка:</b> о <code>{times_str}</code> (часовий пояс: <code>{config.TIMEZONE}</code>)",
         parse_mode="HTML",
     )
@@ -587,6 +588,38 @@ async def cmd_status(message: Message):
         f"<b>Файл кешу:</b> <code>{config.SEEN_POSTS_FILE}</code>"
     )
     await message.answer(text, parse_mode="HTML")
+
+
+@dp.message(Command("memory"))
+async def cmd_memory(message: Message):
+    import gc
+    import sys
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+    rss_mb = 0.0
+    try:
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss_mb = float(line.split()[1]) / 1024.0
+                    break
+    except Exception:
+        pass
+
+    lines = [
+        "📊 <b>Діагностика використання пам'яті (RAM):</b>",
+        f"• Поточний RSS процесу: <code>{rss_mb:.2f} MB</code>" if rss_mb else "• Поточний RSS: <i>доступний на Linux/Docker серверах</i>",
+        f"• Завантажено модулів Python: <code>{len(sys.modules)}</code>",
+        f"• Об'єктів під спостереженням GC: <code>{len(gc.get_objects())}</code>",
+        "",
+        "💡 <i>Примітка: Основну частину пам'яті (~140 MB) займають Pydantic v2 схеми моделей Telegram API (aiogram) та Google GenAI. Після генерації дайджесту викликається malloc_trim для вивільнення сторінок ОС.</i>",
+    ]
+    await message.answer("\n".join(lines), parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------

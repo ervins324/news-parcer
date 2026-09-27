@@ -89,7 +89,7 @@ class TestSchedulerSetup(unittest.TestCase):
 class TestLLMGenerationAndFallback(unittest.TestCase):
     """Тести генерації новин через Gemini та резервний OpenRouter."""
 
-    @patch("ai_config.genai.Client")
+    @patch("google.genai.Client")
     def test_gemini_success_primary(self, mock_genai_client):
         # Gemini returns content successfully
         mock_instance = MagicMock()
@@ -127,7 +127,7 @@ class TestLLMGenerationAndFallback(unittest.TestCase):
         self.assertIn("Gemini down", str(ctx.exception))
         self.assertIn("OpenRouter down", str(ctx.exception))
 
-    @patch("ai_config.OpenRouter")
+    @patch("openrouter.OpenRouter")
     def test_openrouter_direct_call(self, mock_openrouter_class):
         mock_client = MagicMock()
         mock_openrouter_class.return_value.__enter__.return_value = mock_client

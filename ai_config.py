@@ -1,7 +1,5 @@
 import logging
 import os
-from google import genai
-from openrouter import OpenRouter
 
 import config
 
@@ -13,6 +11,7 @@ def _generate_with_gemini(prompt: str) -> str:
     if not config.GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY не налаштовано у файлі .env")
 
+    from google import genai
     log.debug("Підключення до Google Gemini (модель: %s)...", config.GEMINI_MODEL)
     ai_client = genai.Client(api_key=config.GEMINI_API_KEY)
     response = ai_client.models.generate_content(
@@ -35,6 +34,7 @@ def _generate_with_openrouter(prompt: str) -> str:
     if not config.OPENROUTER_API_KEY:
         raise ValueError("OPENROUTER_API_KEY не налаштовано у файлі .env")
 
+    from openrouter import OpenRouter
     log.info("Підключення до OpenRouter (модель: %s)...", config.OPENROUTER_MODEL)
     with OpenRouter(
         api_key=config.OPENROUTER_API_KEY,
@@ -79,6 +79,7 @@ def list_openrouter_models(limit: int = 100) -> list[dict[str, str]]:
         log.warning("OPENROUTER_API_KEY не задано. Неможливо отримати список моделей.")
         return []
 
+    from openrouter import OpenRouter
     models: list[dict[str, str]] = []
     with OpenRouter(
         http_referer=config.OPENROUTER_HTTP_REFERER or None,
