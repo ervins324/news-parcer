@@ -69,21 +69,15 @@ if __name__ == "__main__":
     import lxml
     log_step("04. import lxml")
 
-    import aiogram
-    log_step("05. import aiogram")
+    import telegram_client
+    log_step("05. import telegram_client")
 
     import apscheduler
     log_step("06. import apscheduler")
 
-    from openrouter import OpenRouter
-    log_step("07. import openrouter")
-
-    from google import genai
-    log_step("08. import google.genai")
-
     import main
-    log_step("09. import main")
+    log_step("07. import main")
 
     import gc
     gc.collect()
-    log_step("10. After gc.collect()")
+    log_step("08. After gc.collect()")

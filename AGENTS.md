@@ -1,10 +1,10 @@
 # news-parcer — Telegram news digest bot
 
 ## Entrypoint
-- `main.py` — async aiogram 3.x bot, polling-based with background APScheduler and continuous execution.
+- `main.py` — lightweight async Telegram bot using native `aiohttp`, polling-based with background APScheduler and continuous execution.
 
 ## Commands
-- `python main.py` — starts bot and scheduler (runs on schedule, listens to `/gazette`, `/schedule`, `/status`, `/start`)
+- `python main.py` — starts bot and scheduler (runs on schedule, listens to `/gazette`, `/schedule`, `/status`, `/start`, `/memory`)
 - `python -m unittest discover tests -v` — run test suite
 - `python ai_config.py --test-openrouter` — test direct request to OpenRouter
 - `python ai_config.py --test-fallback` — test automatic fallback from Gemini to OpenRouter
@@ -18,11 +18,12 @@
 | File | Role |
 |---|---|
 | `main.py` | Bot logic: scraping (`t.me/s/{channel}`), message dispatch, APScheduler cron scheduling, deduplication |
+| `telegram_client.py` | Ultra-lightweight Telegram Bot API client on native `aiohttp` (~45 MB RAM vs ~210 MB with aiogram) |
 | `config.py` | Configuration loader via `python-dotenv` with fallbacks and environment parsing |
 | `.env` | Local secrets and environment variables (`BOT_TOKEN`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, etc.) |
 | `.env.example` | Template file for configuring environment variables |
 | `ai_config.py` | LLM client with primary Google Gemini and automated OpenRouter fallback (`openrouter==1.2.32`) |
-| `requirements.txt` | Core bot dependencies + `openrouter==1.2.32`, `python-dotenv`, `apscheduler` |
+| `requirements.txt` | Core bot dependencies (`aiohttp`, `beautifulsoup4`, `google-genai`, `lxml`, `openrouter`, `apscheduler`) |
 | `Dockerfile` | Container configuration for server deployment |
 | `docker-compose.yml` | Multi-container/service spec with volume persistence for `seen_posts.json` |
 | `seen_posts.json` | Auto-created cache storing up to 200 post IDs |

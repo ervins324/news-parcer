@@ -7,10 +7,16 @@ from datetime import datetime, timedelta, timezone
 from itertools import islice
 
 import aiohttp
-from aiogram import Bot, Dispatcher
-from aiogram.client.default import DefaultBotProperties
-from aiogram.filters import Command
-from aiogram.types import BufferedInputFile, InputMediaPhoto, MediaUnion, Message
+from telegram_client import (
+    Bot,
+    Dispatcher,
+    DefaultBotProperties,
+    Command,
+    Message,
+    BufferedInputFile,
+    InputMediaPhoto,
+    MediaUnion,
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from bs4 import BeautifulSoup
