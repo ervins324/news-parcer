@@ -12,6 +12,7 @@ jobs:
     name: Run Unit Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.12", "3.13"]
 
@@ -37,6 +38,10 @@ jobs:
         run: cp .env.example .env
 
       - name: Run test suite
+        env:
+          BOT_TOKEN: "1234567890:DummyValidTokenForCiTestABC"
+          GEMINI_API_KEY: "dummy_gemini_key_for_test"
+          OPENROUTER_API_KEY: "dummy_openrouter_key_for_test"
         run: python -m unittest discover tests -v
 
   docker:

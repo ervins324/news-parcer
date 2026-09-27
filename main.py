@@ -77,11 +77,19 @@ def save_seen_posts(seen: set[str]):
 
 
 # ---------------------------------------------------------------------------
-#  Telegram bot & Scheduler init
-# ---------------------------------------------------------------------------
+def _is_valid_bot_token(token: str) -> bool:
+    if not token or not isinstance(token, str) or any(c.isspace() for c in token):
+        return False
+    left, sep, right = token.partition(":")
+    return bool(sep and left.isdigit() and right)
+
+
+_FALLBACK_BOT_TOKEN = "1234567890:DummyValidTokenForImportsAndTestsOnlyABC"
+_active_bot_token = config.BOT_TOKEN if _is_valid_bot_token(config.BOT_TOKEN) else _FALLBACK_BOT_TOKEN
+
 log.debug("Ініціалізація Telegram бота...")
 bot = Bot(
-    token=config.BOT_TOKEN or "dummy_token_to_allow_import",
+    token=_active_bot_token,
     default=DefaultBotProperties(link_preview_is_disabled=True),
 )
 dp = Dispatcher()
@@ -577,9 +585,9 @@ async def cmd_status(message: Message):
 #  Entry point
 # ---------------------------------------------------------------------------
 async def main():
-    if not config.BOT_TOKEN or config.BOT_TOKEN.startswith("dummy"):
+    if not _is_valid_bot_token(config.BOT_TOKEN) or config.BOT_TOKEN == _FALLBACK_BOT_TOKEN:
         log.critical(
-            "Помилка: BOT_TOKEN не вказано! Будь ласка, вкажіть його у файлі .env (скопіюйте з .env.example)."
+            "Помилка: BOT_TOKEN не вказано або він має некоректний формат! Будь ласка, вкажіть його у файлі .env (скопіюйте з .env.example)."
         )
         return
 
