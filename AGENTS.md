@@ -1,33 +1,34 @@
 # news-parcer — Telegram news digest bot
 
 ## Entrypoint
-- `main.py` — async aiogram 3.x bot, polling-based.
+- `main.py` — async aiogram 3.x bot, polling-based with background APScheduler and continuous execution.
 
 ## Commands
-- `python main.py` — starts bot (auto-runs `/gazette` once on startup if `config.py:MY_TELEGRAM_ID` is set)
-- No test/lint/formatter config exists. No CI.
+- `python main.py` — starts bot and scheduler (runs on schedule, listens to `/gazette`, `/schedule`, `/status`, `/start`)
+- `python ai_config.py --list-models` — lists models from OpenRouter
+- `docker compose up -d --build` — run as a daemon service on a server
 
 ## Key structure
 | File | Role |
 |---|---|
-| `main.py` | Bot logic: async web scraping (`t.me/s/{channel}`) via aiohttp, message dispatch, post dedup |
-| `config.py` | Secrets (`BOT_TOKEN`, `GEMINI_API_KEY`), channel list, target user ID |
-| `ai_config.py` | Google Gemini client (`google-genai` v2.x, not `google-generativeai`) |
-| `requirements.txt` | `aiogram==3.29.1`, `aiohttp>=3.10.0`, `beautifulsoup4==4.15.0`, `google-genai==2.11.0`, `lxml>=5.3.0` |
-| `seen_posts.json` | Auto-created; stores up to 200 post IDs to avoid resending the same news |
+| `main.py` | Bot logic: scraping (`t.me/s/{channel}`), message dispatch, APScheduler cron scheduling, deduplication |
+| `config.py` | Configuration loader via `python-dotenv` with fallbacks and environment parsing |
+| `.env` | Local secrets and environment variables (`BOT_TOKEN`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, etc.) |
+| `.env.example` | Template file for configuring environment variables |
+| `ai_config.py` | LLM client with primary Google Gemini and automated OpenRouter fallback (`openrouter==1.2.32`) |
+| `requirements.txt` | Core bot dependencies + `openrouter==1.2.32`, `python-dotenv`, `apscheduler` |
+| `Dockerfile` | Container configuration for server deployment |
+| `docker-compose.yml` | Multi-container/service spec with volume persistence for `seen_posts.json` |
+| `seen_posts.json` | Auto-created cache storing up to 200 post IDs |
 
 ## Before committing
-- **Never commit `config.py`** — it contains live API tokens (`BOT_TOKEN`, `GEMINI_API_KEY`).
+- **Never commit `.env`** — contains live API tokens (`BOT_TOKEN`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`).
 - **Never commit `seen_posts.json`** — local cache of already-seen post IDs.
-- The project uses `.gitignore` to exclude `.venv/`, `__pycache__/`, `config.py`, `seen_posts.json`.
+- The project uses `.gitignore` to exclude `.venv/`, `__pycache__/`, `config.py`, `seen_posts.json`, `.env`, `.env.*` (except `.env.example`).
 
-## Known quirks
-- Scrapes `t.me/s/{channel}` with a desktop Chrome User-Agent.
-- All channels are scraped concurrently via `asyncio.gather()`.
-- HTTP requests use retry logic (3 attempts with exponential backoff).
-- Messages >4000 chars are split at last newline/space boundary with 0.5s delay.
-- Bot auto-runs `make_and_send_gazette()` on startup, then stops polling (`dp.stop_polling()`). After auto-run the bot exits.
-- Link previews disabled globally via `DefaultBotProperties(link_preview_is_disabled=True)`.
-- Post dedup uses `seen_posts.json` — post IDs are saved only after the digest is sent successfully. Oldest entries are evicted at 200.
-- Uses `lxml` parser for fast HTML parsing.
-- Uses Python `logging` module for diagnostics (not bare `print()`).
+## Known features & quirks
+- Scrapes `t.me/s/{channel}` concurrently using a desktop Chrome User-Agent.
+- HTTP requests use exponential-backoff retries.
+- Scheduled delivery uses `APScheduler` based on `SCHEDULE_TIMES` and `TIMEZONE` in `.env`.
+- LLM generation first tries Google Gemini; if any error occurs (quota, downtime, API error), it seamlessly falls back to OpenRouter.
+- Post dedup uses `seen_posts.json` (or path set by `SEEN_POSTS_FILE`).

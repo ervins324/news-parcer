@@ -1,1 +1,97 @@
-Simple python app, that parcers latest posts for setuped telegram channels, using that information GEMINI writes summary and sends it to user 
+# 🗞️ News Parcer — Telegram News Digest Bot
+
+Асинхронний Telegram-бот, який парсить публічні Telegram-канали, формує стислий структурований новинний дайджест за допомогою штучного інтелекту (**Google Gemini** з автоматичним перемиканням на **OpenRouter** при збоях) та розсилає його за налаштованим розкладом або за командою.
+
+---
+
+## ✨ Основні можливості
+
+- **Асинхронний веб-скрейпінг**: парсинг каналів через веб-дзеркало `t.me/s/{channel}` без необхідності реєстрації Telegram API Client.
+- **Підтримка зображень**: завантаження та надсилання медіагруп (галерей) разом із новинами.
+- **Дворівневий LLM бекенд**:
+  - **Основний**: Google Gemini (`gemini-3.5-flash` / `gemini-2.5-flash`).
+  - **Резервний**: [OpenRouter](https://openrouter.ai/) (на базі офіційного SDK `openrouter 1.2.32`). Якщо Gemini повертає помилку або вичерпано квоту, бот автоматично переходить на OpenRouter.
+- **Гнучкий планувальник (APScheduler)**: надсилання газети за вказаними годинами (наприклад, о 09:00 та 20:00 за київським часом).
+- **Безпечна конфігурація**: усі токени та ключі відокремлені у `.env`.
+- **Готовий до Docker**: простий запуск на сервері через `docker compose` із збереженням бази прочитаних новин.
+
+---
+
+## 🚀 Швидкий старт
+
+### 1. Налаштування оточення (`.env`)
+
+Скопіюйте приклад файлу налаштувань:
+
+```bash
+cp .env.example .env
+```
+
+Відкрийте `.env` та вкажіть власні параметри:
+
+```env
+# Telegram
+BOT_TOKEN=8608873373:AAE...
+MY_TELEGRAM_ID=1134564474
+TG_CHANNELS=naebnet,kiev_levyy_bereg
+
+# Google Gemini (основний)
+GEMINI_API_KEY=AIzaSy...
+GEMINI_MODEL=gemini-3.5-flash
+
+# OpenRouter (резервний)
+OPENROUTER_API_KEY=sk-or-v1-...
+OPENROUTER_MODEL=google/gemini-2.0-flash-001
+
+# Розклад
+TIMEZONE=Europe/Kyiv
+SCHEDULE_TIMES=09:00, 20:00
+RUN_ON_STARTUP=false
+```
+
+---
+
+### 2. Запуск на сервері через Docker
+
+Найпростіший та рекомендований спосіб розгортання:
+
+```bash
+# Побудова образу та запуск у фоновому режимі
+docker compose up -d --build
+
+# Перегляд логів
+docker compose logs -f
+```
+
+База прочитаних постів (`seen_posts.json`) зберігається в іменованому томі Docker `news-parcer-data`, тому дані не зникають при оновленні контейнера.
+
+---
+
+### 3. Локальний запуск (без Docker)
+
+```bash
+# Встановлення залежностей
+pip install -r requirements.txt
+
+# Запуск бота
+python main.py
+```
+
+---
+
+## 🤖 Команди Telegram-бота
+
+- `/start` — коротка довідка та інформація про розклад.
+- `/gazette` — згенерувати та надіслати дайджест негайно.
+- `/schedule` — перевірити поточний розклад та точний час наступних відправок.
+- `/status` — інформація про стан підключення Gemini, OpenRouter, список каналів та кеш.
+
+---
+
+## 🔍 Вибір моделі OpenRouter
+
+Для перегляду доступних моделей OpenRouter можна запустити допоміжну утиліту:
+
+```bash
+python ai_config.py --list-models
+```

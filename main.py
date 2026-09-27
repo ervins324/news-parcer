@@ -3,19 +3,19 @@ import json
 import logging
 import re
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from itertools import islice
-from pathlib import Path
 
 import aiohttp
-from bs4 import BeautifulSoup
-
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.filters import Command
-from aiogram.types import Message, BufferedInputFile, InputMediaPhoto, MediaUnion
+from aiogram.types import BufferedInputFile, InputMediaPhoto, MediaUnion, Message
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from bs4 import BeautifulSoup
 
-# Імпортуємо конфіг та функцію генерації
+# Import config and generation function
 import config
 from ai_config import generate_news_digest
 
@@ -23,7 +23,7 @@ from ai_config import generate_news_digest
 #  Logging
 # ---------------------------------------------------------------------------
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
@@ -32,7 +32,6 @@ log = logging.getLogger("news-parcer")
 # ---------------------------------------------------------------------------
 #  Constants
 # ---------------------------------------------------------------------------
-SEEN_POSTS_FILE = Path("seen_posts.json")
 MAX_SEEN_POSTS = 200
 MSG_CHAR_LIMIT = 4000
 HTTP_TIMEOUT = aiohttp.ClientTimeout(total=15)
@@ -49,33 +48,45 @@ USER_AGENT = (
 #  Seen-posts persistence
 # ---------------------------------------------------------------------------
 def load_seen_posts() -> set[str]:
-    if not SEEN_POSTS_FILE.exists():
+    """Завантажує ідентифікатори раніше оброблених постів."""
+    if not config.SEEN_POSTS_FILE.exists():
         return set()
     try:
-        data = json.loads(SEEN_POSTS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(config.SEEN_POSTS_FILE.read_text(encoding="utf-8"))
         return set(data.get("seen", []))
-    except (json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, KeyError, OSError) as exc:
+        log.warning(
+            "Не вдалося завантажити кеш постів (%s): %s", config.SEEN_POSTS_FILE, exc
+        )
         return set()
 
 
 def save_seen_posts(seen: set[str]):
-    """Зберігає в файл, обрізаючи до MAX_SEEN_POSTS найновіших."""
-    as_list = list(seen)[-MAX_SEEN_POSTS:]
-    SEEN_POSTS_FILE.write_text(
-        json.dumps({"seen": as_list}, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    """Зберігає у файл, залишаючи не більше MAX_SEEN_POSTS найновіших."""
+    try:
+        config.SEEN_POSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        as_list = list(seen)[-MAX_SEEN_POSTS:]
+        config.SEEN_POSTS_FILE.write_text(
+            json.dumps({"seen": as_list}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.error(
+            "Помилка збереження кешу постів у %s: %s", config.SEEN_POSTS_FILE, exc
+        )
 
 
 # ---------------------------------------------------------------------------
-#  Telegram bot init
+#  Telegram bot & Scheduler init
 # ---------------------------------------------------------------------------
-log.debug("Ініціалізація Telegram бота (з автоматичним запуском)...")
+log.debug("Ініціалізація Telegram бота...")
 bot = Bot(
-    token=config.BOT_TOKEN,
+    token=config.BOT_TOKEN or "dummy_token_to_allow_import",
     default=DefaultBotProperties(link_preview_is_disabled=True),
 )
 dp = Dispatcher()
+scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
+gazette_lock = asyncio.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -94,9 +105,13 @@ async def _fetch(
             async with session.get(url) as resp:
                 if resp.status == 200:
                     return await resp.read()
-                log.warning("HTTP %s для %s (спроба %d/%d)", resp.status, url, attempt, retries)
+                log.warning(
+                    "HTTP %s для %s (спроба %d/%d)", resp.status, url, attempt, retries
+                )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            log.warning("Помилка запиту %s (спроба %d/%d): %s", url, attempt, retries, exc)
+            log.warning(
+                "Помилка запиту %s (спроба %d/%d): %s", url, attempt, retries, exc
+            )
         if attempt < retries:
             await asyncio.sleep(delay)
             delay *= 2
@@ -106,7 +121,9 @@ async def _fetch(
 # ---------------------------------------------------------------------------
 #  Smart message splitting
 # ---------------------------------------------------------------------------
-async def send_long_message_to_user(bot_instance: Bot, chat_id: int, text: str) -> list[int]:
+async def send_long_message_to_user(
+    bot_instance: Bot, chat_id: int, text: str
+) -> list[int]:
     """
     Розбиває довгий текст на частини ≤ MSG_CHAR_LIMIT, намагаючись
     різати по останньому переносу рядка або пробілу.
@@ -117,7 +134,6 @@ async def send_long_message_to_user(bot_instance: Bot, chat_id: int, text: str) 
             chunk = text
             text = ""
         else:
-            # Шукаємо останній перенос рядка, потім пробіл
             cut = text.rfind("\n", 0, MSG_CHAR_LIMIT)
             if cut == -1:
                 cut = text.rfind(" ", 0, MSG_CHAR_LIMIT)
@@ -192,7 +208,9 @@ async def _scrape_channel(
         if text_block:
             clean_text = text_block.get_text(separator="\n").strip()
             if clean_text:
-                text_data += f"Пост: {clean_text}\nПосилання на оригінал: {post_link}\n\n"
+                text_data += (
+                    f"Пост: {clean_text}\nПосилання на оригінал: {post_link}\n\n"
+                )
                 new_ids.add(post_id_attr)
                 posts_added += 1
                 photo_urls: list[dict[str, str]] = []
@@ -201,16 +219,20 @@ async def _scrape_channel(
                     href_attr = str(photo_a.get("href") or "")
                     match = re.search(r"background-image:url\('(.+?)'\)", style_attr)
                     if match and href_attr:
-                        photo_urls.append({
-                            "url": match.group(1),
-                            "link": href_attr.split("?")[0],
-                        })
+                        photo_urls.append(
+                            {
+                                "url": match.group(1),
+                                "link": href_attr.split("?")[0],
+                            }
+                        )
                 if photo_urls:
                     images_by_post[post_id_attr] = photo_urls
 
     log.debug(
         "З каналу %s: додано %d, пропущено (раніше бачені) %d",
-        channel, posts_added, posts_skipped,
+        channel,
+        posts_added,
+        posts_skipped,
     )
     return text_data, new_ids, images_by_post
 
@@ -221,17 +243,17 @@ async def get_telegram_posts_via_web(
 ) -> tuple[str, set[str], dict]:
     """Scrape all configured channels concurrently."""
     t0 = time.perf_counter()
-    log.debug("Початок збору даних з Telegram-каналів... (всього збережено %d ID)", len(seen))
+    log.info(
+        "Початок збору даних з Telegram-каналів (%d каналів)...",
+        len(config.TG_CHANNELS),
+    )
     time_threshold = datetime.now(timezone.utc) - timedelta(days=1)
-    log.debug("Шукаємо пости, опубліковані після: %s", time_threshold)
 
     tasks = [
-        _scrape_channel(session, ch, seen, time_threshold)
-        for ch in config.TG_CHANNELS
+        _scrape_channel(session, ch, seen, time_threshold) for ch in config.TG_CHANNELS
     ]
     results = await asyncio.gather(*tasks)
 
-    # Merge results
     text_data = ""
     new_ids: set[str] = set()
     images_by_post: dict[str, list[dict[str, str]]] = {}
@@ -240,7 +262,11 @@ async def get_telegram_posts_via_web(
         new_ids |= ch_ids
         images_by_post.update(ch_images)
 
-    log.debug("Збір даних завершено за %.2f сек.", time.perf_counter() - t0)
+    log.info(
+        "Збір даних завершено за %.2f сек. Знайдено нових постів: %d",
+        time.perf_counter() - t0,
+        len(new_ids),
+    )
     return text_data, new_ids, images_by_post
 
 
@@ -257,11 +283,12 @@ async def _download_images(
     limit: int,
 ) -> list[BufferedInputFile]:
     """Download up to *limit* images concurrently."""
-    # Flatten to a list of photo dicts, capped at limit
-    flat_photos = list(islice(
-        (photo for photos in images_by_post.values() for photo in photos),
-        limit,
-    ))
+    flat_photos = list(
+        islice(
+            (photo for photos in images_by_post.values() for photo in photos),
+            limit,
+        )
+    )
     if not flat_photos:
         return []
 
@@ -289,7 +316,9 @@ async def send_post_images(
     Повертає решту тексту, якщо він не вмістився у ліміт caption (1024 симв.).
     """
     loaded = await _download_images(
-        session, images_by_post, getattr(config, "MAX_TOTAL_IMAGES", 10),
+        session,
+        images_by_post,
+        getattr(config, "MAX_TOTAL_IMAGES", 5),
     )
     if not loaded:
         return response_text
@@ -298,7 +327,9 @@ async def send_post_images(
     caption = response_text[:caption_limit]
     leftover = response_text[caption_limit:]
 
-    log.debug("Надсилаємо галерею зображень (%d шт.) з текстом у підписі...", len(loaded))
+    log.debug(
+        "Надсилаємо галерею зображень (%d шт.) з текстом у підписі...", len(loaded)
+    )
     for i in range(0, len(loaded), 10):
         chunk = loaded[i : i + 10]
         cap = caption if i == 0 else None
@@ -323,74 +354,144 @@ async def send_post_images(
 # ---------------------------------------------------------------------------
 async def make_and_send_gazette(bot_instance: Bot, chat_id: int):
     """Генерує дайджест та надсилає його вказаному користувачу."""
-    t0 = time.perf_counter()
-    waiting_msg = await bot_instance.send_message(chat_id, "🗞 Друкую газету... Зачекайте хвилинку.")
-
-    try:
-        seen = load_seen_posts()
-
-        async with aiohttp.ClientSession(
-            timeout=HTTP_TIMEOUT,
-            headers={"User-Agent": USER_AGENT},
-        ) as session:
-            tg_content, new_post_ids, images_by_post = await get_telegram_posts_via_web(session, seen)
-
-            if not new_post_ids:
-                await waiting_msg.edit_text("Свіжих новин за останні 24 години не знайдено.")
-                return
-
-            log.debug("Сирий текст зібрано. Запит до Gemini через ai_config...")
-            response_text = generate_news_digest(tg_content)
-
-            log.debug("Надсилаємо газету...")
-
-            if getattr(config, "SEND_IMAGES", True):
-                digest_post_ids = extract_post_ids_from_digest(response_text)
-                filtered_images = {
-                    pid: photos
-                    for pid, photos in images_by_post.items()
-                    if pid in digest_post_ids
-                }
-                leftover_text = await send_post_images(
-                    bot_instance, chat_id, response_text, filtered_images, session,
-                )
-                if leftover_text:
-                    await send_long_message_to_user(bot_instance, chat_id, leftover_text)
-            else:
-                await send_long_message_to_user(bot_instance, chat_id, response_text)
-
-        await waiting_msg.delete()
-
-        # Зберігаємо нові ID разом з попередніми
-        seen |= new_post_ids
-        save_seen_posts(seen)
-        log.debug("Збережено %d нових ID постів у seen_posts.json", len(new_post_ids))
-
-        log.debug("Газету успішно надіслано! Загальний час: %.2f сек.", time.perf_counter() - t0)
-
-    except Exception as exc:
-        log.error("Помилка під час генерації газети: %s", exc)
+    if gazette_lock.locked():
+        log.warning(
+            "Генерація газети вже виконується. Запит для %s відхилено.", chat_id
+        )
         try:
-            await waiting_msg.edit_text(f"Сталася помилка при генерації: {exc}")
-        except Exception as edit_err:
-            log.error("Не вдалося відредагувати статус-повідомлення: %s", edit_err)
-
-
-# ---------------------------------------------------------------------------
-#  Auto-run on startup
-# ---------------------------------------------------------------------------
-async def auto_run_gazette(bot_instance: Bot):
-    """Запускає генерацію газети автоматично відразу після старту main.py."""
-    # Даємо боту 1-2 секунди, щоб повністю підключитися до серверів Telegram
-    await asyncio.sleep(2)
-    log.debug("--- АВТОЗАПУСК: Починаємо підготовку газети при старті скрипта ---")
-
-    if not hasattr(config, "MY_TELEGRAM_ID") or config.MY_TELEGRAM_ID == 123456789:
-        log.warning("Автозапуск скасовано: Не вказано ваш реальний MY_TELEGRAM_ID у файлі config.py!")
+            await bot_instance.send_message(
+                chat_id, "⏳ Газета вже готується. Будь ласка, зачекайте."
+            )
+        except Exception:
+            pass
         return
 
-    await make_and_send_gazette(bot_instance, config.MY_TELEGRAM_ID)
-    await dp.stop_polling()
+    async with gazette_lock:
+        t0 = time.perf_counter()
+        waiting_msg = await bot_instance.send_message(
+            chat_id, "🗞 Друкую газету... Зачекайте хвилинку."
+        )
+
+        try:
+            seen = load_seen_posts()
+
+            async with aiohttp.ClientSession(
+                timeout=HTTP_TIMEOUT,
+                headers={"User-Agent": USER_AGENT},
+            ) as session:
+                (
+                    tg_content,
+                    new_post_ids,
+                    images_by_post,
+                ) = await get_telegram_posts_via_web(session, seen)
+
+                if not new_post_ids:
+                    await waiting_msg.edit_text(
+                        "Свіжих новин за останні 24 години не знайдено."
+                    )
+                    return
+
+                log.info(
+                    "Сирий текст зібрано. Запит до LLM (Gemini / OpenRouter fallback)..."
+                )
+                # Виконуємо синхронний запит до LLM у окремому потоці, щоб не блокувати asyncio loop
+                response_text = await asyncio.to_thread(
+                    generate_news_digest, tg_content
+                )
+
+                log.info("Надсилаємо дайджест користувачу %s...", chat_id)
+
+                if getattr(config, "SEND_IMAGES", True):
+                    digest_post_ids = extract_post_ids_from_digest(response_text)
+                    filtered_images = {
+                        pid: photos
+                        for pid, photos in images_by_post.items()
+                        if pid in digest_post_ids
+                    }
+                    leftover_text = await send_post_images(
+                        bot_instance,
+                        chat_id,
+                        response_text,
+                        filtered_images,
+                        session,
+                    )
+                    if leftover_text:
+                        await send_long_message_to_user(
+                            bot_instance, chat_id, leftover_text
+                        )
+                else:
+                    await send_long_message_to_user(
+                        bot_instance, chat_id, response_text
+                    )
+
+            await waiting_msg.delete()
+
+            # Зберігаємо нові ID разом з попередніми
+            seen |= new_post_ids
+            save_seen_posts(seen)
+            log.info("Збережено %d нових ID постів у кеш", len(new_post_ids))
+            log.info(
+                "Газету успішно надіслано! Загальний час: %.2f сек.",
+                time.perf_counter() - t0,
+            )
+
+        except Exception as exc:
+            log.error("Помилка під час генерації газети: %s", exc, exc_info=True)
+            try:
+                await waiting_msg.edit_text(f"Сталася помилка при генерації: {exc}")
+            except Exception as edit_err:
+                log.error("Не вдалося відредагувати статус-повідомлення: %s", edit_err)
+
+
+# ---------------------------------------------------------------------------
+#  Scheduled & Auto-run jobs
+# ---------------------------------------------------------------------------
+async def scheduled_gazette_job():
+    """Задача автоматичної генерації газети за розкладом."""
+    log.info("--- [РОЗКЛАД] Запуск випуску газети за розкладом ---")
+    if not config.MY_TELEGRAM_ID or config.MY_TELEGRAM_ID == 123456789:
+        log.warning("[РОЗКЛАД] Скасовано: не налаштовано MY_TELEGRAM_ID у файлі .env!")
+        return
+
+    await make_and_send_gazette(bot, config.MY_TELEGRAM_ID)
+
+
+def setup_scheduler():
+    """Налаштовує cron тригери для кожного часу в config.SCHEDULE_TIMES."""
+    for time_str in config.SCHEDULE_TIMES:
+        try:
+            hour, minute = map(int, time_str.split(":"))
+            trigger = CronTrigger(hour=hour, minute=minute, timezone=config.TIMEZONE)
+            job = scheduler.add_job(
+                scheduled_gazette_job,
+                trigger=trigger,
+                id=f"gazette_{hour:02d}_{minute:02d}",
+                name=f"Gazette {time_str} ({config.TIMEZONE})",
+                replace_existing=True,
+            )
+            log.info("Додано розклад випуску: о %s (%s)", time_str, config.TIMEZONE)
+        except Exception as exc:
+            log.error("Не вдалося додати час розкладу '%s': %s", time_str, exc)
+
+
+async def auto_run_gazette_if_enabled():
+    """Запускає дайджест відразу після старту, якщо увімкнено RUN_ON_STARTUP."""
+    if not config.RUN_ON_STARTUP:
+        log.info(
+            "RUN_ON_STARTUP=false — початковий випуск пропущено. Бот готовий до роботи за розкладом."
+        )
+        return
+
+    await asyncio.sleep(2)
+    log.info("--- [АВТОЗАПУСК] Починаємо підготовку газети при старті бота ---")
+
+    if not config.MY_TELEGRAM_ID or config.MY_TELEGRAM_ID == 123456789:
+        log.warning(
+            "[АВТОЗАПУСК] Скасовано: не вказано дійсний MY_TELEGRAM_ID у файлі .env!"
+        )
+        return
+
+    await make_and_send_gazette(bot, config.MY_TELEGRAM_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -398,9 +499,17 @@ async def auto_run_gazette(bot_instance: Bot):
 # ---------------------------------------------------------------------------
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
+    times_str = (
+        ", ".join(config.SCHEDULE_TIMES) if config.SCHEDULE_TIMES else "не налаштовано"
+    )
     await message.answer(
-        "Привіт! Я твій персональний редактор газети.\n"
-        "Надішли /gazette, і я підготую свіжий випуск новин."
+        "👋 Привіт! Я твій персональний редактор газетного дайджесту.\n\n"
+        "📌 <b>Команди:</b>\n"
+        "• /gazette — підготувати та надіслати свіжий випуск новин прямо зараз\n"
+        "• /schedule — переглянути активний розклад випусків\n"
+        "• /status — перевірити статус підключення LLM та джерел\n\n"
+        f"⏰ <b>Автоматична розсилка:</b> о <code>{times_str}</code> (часовий пояс: <code>{config.TIMEZONE}</code>)",
+        parse_mode="HTML",
     )
 
 
@@ -411,25 +520,90 @@ async def cmd_gazette(message: Message):
         return
 
     user_id = message.from_user.id
-    log.debug("Користувач %d запросив випуск газети вручну (/gazette)", user_id)
+    log.info("Користувач %d запросив випуск газети вручну (/gazette)", user_id)
     await make_and_send_gazette(bot, user_id)
+
+
+@dp.message(Command("schedule"))
+async def cmd_schedule(message: Message):
+    lines = [
+        "📅 <b>Розклад випуску новин:</b>",
+        f"• Часовий пояс: <code>{config.TIMEZONE}</code>",
+        f"• Час розсилки: <code>{', '.join(config.SCHEDULE_TIMES)}</code>",
+        f"• Цільовий Telegram ID: <code>{config.MY_TELEGRAM_ID or 'не вказано'}</code>",
+        f"• Випуск при старті: <code>{'Увімкнено' if config.RUN_ON_STARTUP else 'Вимкнено'}</code>",
+        "",
+        "⏳ <b>Найближчі заплановані випуски:</b>",
+    ]
+    jobs = scheduler.get_jobs()
+    if jobs:
+        for job in jobs:
+            next_time = job.next_run_time
+            if next_time:
+                lines.append(
+                    f"• {job.name}: <code>{next_time.strftime('%Y-%m-%d %H:%M:%S')}</code>"
+                )
+            else:
+                lines.append(f"• {job.name}")
+    else:
+        lines.append("<i>Немає активних задач у розкладі.</i>")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+@dp.message(Command("status"))
+async def cmd_status(message: Message):
+    gemini_status = "✅ Налаштовано" if config.GEMINI_API_KEY else "❌ Не вказано"
+    openrouter_status = (
+        "✅ Налаштовано" if config.OPENROUTER_API_KEY else "❌ Не вказано"
+    )
+    seen_count = len(load_seen_posts())
+    channels = "\n".join(f"• @{ch}" for ch in config.TG_CHANNELS)
+
+    text = (
+        "⚙️ <b>Стан системи та конфігурації:</b>\n\n"
+        "<b>LLM провайдери:</b>\n"
+        f"• Основний (Gemini - <code>{config.GEMINI_MODEL}</code>): {gemini_status}\n"
+        f"• Резервний (OpenRouter - <code>{config.OPENROUTER_MODEL}</code>): {openrouter_status}\n\n"
+        f"<b>Канали для моніторингу ({len(config.TG_CHANNELS)}):</b>\n{channels}\n\n"
+        f"<b>Зображення:</b> {'Увімкнено (до ' + str(config.MAX_TOTAL_IMAGES) + ')' if config.SEND_IMAGES else 'Вимкнено'}\n"
+        f"<b>Кеш прочитаних постів:</b> {seen_count} постів\n"
+        f"<b>Файл кешу:</b> <code>{config.SEEN_POSTS_FILE}</code>"
+    )
+    await message.answer(text, parse_mode="HTML")
 
 
 # ---------------------------------------------------------------------------
 #  Entry point
 # ---------------------------------------------------------------------------
 async def main():
-    asyncio.create_task(auto_run_gazette(bot))
-    log.debug("Запуск bot polling...")
+    if not config.BOT_TOKEN or config.BOT_TOKEN.startswith("dummy"):
+        log.critical(
+            "Помилка: BOT_TOKEN не вказано! Будь ласка, вкажіть його у файлі .env (скопіюйте з .env.example)."
+        )
+        return
+
+    # Ініціалізація та старт планувальника
+    setup_scheduler()
+    scheduler.start()
+    log.info(
+        "Планувальник успішно запущено. Активних задач: %d", len(scheduler.get_jobs())
+    )
+
+    # Запуск авто-випуску при старті (якщо увімкнено)
+    asyncio.create_task(auto_run_gazette_if_enabled())
+
+    log.info("Запуск Telegram bot polling...")
     try:
         await dp.start_polling(bot)
     finally:
+        scheduler.shutdown(wait=False)
         await bot.session.close()
-        log.debug("Роботу завершено.")
+        log.info("Роботу бота завершено.")
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        log.debug("Роботу бота зупинено.")
+        log.info("Роботу бота зупинено користувачем.")

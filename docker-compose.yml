@@ -1,0 +1,15 @@
+services:
+  news-parcer:
+    build: .
+    container_name: news-parcer
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - SEEN_POSTS_FILE=/app/data/seen_posts.json
+    volumes:
+      - news-data:/app/data
+
+volumes:
+  news-data:
+    name: news-parcer-data
