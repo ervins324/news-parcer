@@ -1,5 +1,7 @@
 # 🗞️ News Parcer — Telegram News Digest Bot
 
+[![CI](https://github.com/ervins324/news-parcer/actions/workflows/ci.yml/badge.svg)](https://github.com/ervins324/news-parcer/actions/workflows/ci.yml)
+
 Асинхронний Telegram-бот, який парсить публічні Telegram-канали, формує стислий структурований новинний дайджест за допомогою штучного інтелекту (**Google Gemini** з автоматичним перемиканням на **OpenRouter** при збоях) та розсилає його за налаштованим розкладом або за командою.
 
 ---

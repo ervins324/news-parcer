@@ -5,8 +5,14 @@
 
 ## Commands
 - `python main.py` — starts bot and scheduler (runs on schedule, listens to `/gazette`, `/schedule`, `/status`, `/start`)
+- `python -m unittest discover tests -v` — run test suite
+- `python ai_config.py --test-openrouter` — test direct request to OpenRouter
+- `python ai_config.py --test-fallback` — test automatic fallback from Gemini to OpenRouter
 - `python ai_config.py --list-models` — lists models from OpenRouter
 - `docker compose up -d --build` — run as a daemon service on a server
+
+## CI / CD
+- `.github/workflows/ci.yml` — automated GitHub Actions CI pipeline running unit tests on Python 3.12 & 3.13 and validating Docker build.
 
 ## Key structure
 | File | Role |
